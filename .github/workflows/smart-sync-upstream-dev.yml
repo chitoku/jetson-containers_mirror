@@ -1,0 +1,138 @@
+name: Smart Sync Upstream Dev Branch
+
+on:
+  schedule:
+    # Run every 6 hours to keep dev branch in sync
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force sync even if no changes detected'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  sync-upstream-dev:
+    runs-on: ubuntu-latest
+    name: "Smart Sync Upstream Dev Branch"
+
+    steps:
+      - name: Checkout chitoku fork
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          repository: chitoku/jetson-containers
+          ref: dev
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "chitoku-bot"
+          git config --global user.email "chitoku-bot@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          if ! git remote get-url upstream >/dev/null 2>&1; then
+            git remote add upstream https://github.com/dusty-nv/jetson-containers.git
+          else
+            git remote set-url upstream https://github.com/dusty-nv/jetson-containers.git
+          fi
+
+      - name: Fetch upstream changes
+        run: |
+          git fetch upstream
+          git fetch origin
+
+      - name: Check if sync is needed
+        id: check-sync
+        run: |
+          # Get the latest commit from upstream dev
+          UPSTREAM_COMMIT=$(git rev-parse upstream/dev)
+          LOCAL_COMMIT=$(git rev-parse HEAD)
+
+          echo "Upstream dev commit: $UPSTREAM_COMMIT"
+          echo "Local dev commit: $LOCAL_COMMIT"
+
+          if [ "$UPSTREAM_COMMIT" = "$LOCAL_COMMIT" ]; then
+            echo "No sync needed - branches are already in sync"
+            echo "sync_needed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Sync needed - upstream has new commits"
+            echo "sync_needed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Smart sync upstream dev branch
+        if: steps.check-sync.outputs.sync_needed == 'true' || inputs.force_sync == true
+        run: |
+          echo "Performing smart sync to preserve local workflow files..."
+
+          # Check if there are any local commits that aren't in upstream
+          LOCAL_AHEAD=$(git rev-list --count HEAD ^upstream/dev)
+          UPSTREAM_AHEAD=$(git rev-list --count upstream/dev ^HEAD)
+
+          echo "Local commits ahead: $LOCAL_AHEAD"
+          echo "Upstream commits ahead: $UPSTREAM_AHEAD"
+
+          if [ "$LOCAL_AHEAD" -gt 0 ]; then
+            echo "Warning: Local dev branch has $LOCAL_AHEAD commits not in upstream"
+            echo "This might indicate local changes that could be lost"
+
+            # Create a backup branch
+            BACKUP_BRANCH="backup-dev-$(date +%Y%m%d-%H%M%S)"
+            git checkout -b "$BACKUP_BRANCH"
+            git push origin "$BACKUP_BRANCH"
+            echo "Created backup branch: $BACKUP_BRANCH"
+
+            # Switch back to dev
+            git checkout dev
+          fi
+
+          # Store current workflow files before sync
+          echo "Backing up local workflow files..."
+          mkdir -p /tmp/workflow-backup
+          cp -r .github/workflows/* /tmp/workflow-backup/ 2>/dev/null || echo "No local workflows to backup"
+
+          # Reset dev to match upstream dev exactly
+          git reset --hard upstream/dev
+
+          # Restore local workflow files
+          echo "Restoring local workflow files..."
+          if [ -d "/tmp/workflow-backup" ]; then
+            cp -r /tmp/workflow-backup/* .github/workflows/ 2>/dev/null || echo "No workflows to restore"
+
+            # Add and commit the restored workflow files
+            git add .github/workflows/
+            if ! git diff --staged --quiet; then
+              git commit -m "Preserve local workflow files after upstream sync"
+              echo "Committed local workflow files"
+            else
+              echo "No local workflow files to commit"
+            fi
+          fi
+
+          # Force push to update the remote dev branch
+          git push origin dev --force
+
+          echo "Successfully synced dev branch with upstream while preserving local workflows"
+
+      - name: Create sync summary
+        if: always()
+        run: |
+          echo "## Smart Upstream Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Sync Status:** ${{ steps.check-sync.outputs.sync_needed == 'true' && 'Synced' || 'No sync needed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Upstream Commit:** \`$(git rev-parse upstream/dev 2>/dev/null || echo 'N/A')\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Local Commit:** \`$(git rev-parse HEAD)\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow Files:** Preserved during sync" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify on sync
+        if: steps.check-sync.outputs.sync_needed == 'true'
+        run: |
+          echo "Upstream dev branch has been synced successfully"
+          echo "Local workflow files have been preserved"
+          echo "This ensures that future PR syncs will work correctly"
