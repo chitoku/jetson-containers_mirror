@@ -18,18 +18,18 @@ jobs:
     name: "Smart Sync Upstream Dev Branch"
 
     steps:
-      - name: Checkout chitoku fork
+      - name: Checkout test repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-          repository: chitoku/jetson-containers
+          repository: chitoku/jetson-containers_mirror
           ref: dev
 
       - name: Set up Git
         run: |
-          git config --global user.name "chitoku-bot"
-          git config --global user.email "chitoku-bot@users.noreply.github.com"
+          git config --global user.name "chitoku-test-bot"
+          git config --global user.email "chitoku-test-bot@users.noreply.github.com"
 
       - name: Add upstream remote
         run: |
@@ -121,6 +121,7 @@ jobs:
         run: |
           echo "## Smart Upstream Sync Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** chitoku/jetson-containers_mirror" >> $GITHUB_STEP_SUMMARY
           echo "**Sync Status:** ${{ steps.check-sync.outputs.sync_needed == 'true' && 'Synced' || 'No sync needed' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Upstream Commit:** \`$(git rev-parse upstream/dev 2>/dev/null || echo 'N/A')\`" >> $GITHUB_STEP_SUMMARY
