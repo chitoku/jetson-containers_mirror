@@ -21,7 +21,7 @@ jobs:
       - name: Checkout test repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
           repository: chitoku/jetson-containers_mirror
           ref: dev
