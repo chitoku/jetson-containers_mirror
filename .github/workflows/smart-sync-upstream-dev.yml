@@ -77,13 +77,13 @@ jobs:
           if [ "$LOCAL_AHEAD" -gt 0 ]; then
             echo "Warning: Local dev branch has $LOCAL_AHEAD commits not in upstream"
             echo "This might indicate local changes that could be lost"
-
+            
             # Create a backup branch
             BACKUP_BRANCH="backup-dev-$(date +%Y%m%d-%H%M%S)"
             git checkout -b "$BACKUP_BRANCH"
-            git push origin "$BACKUP_BRANCH"
+            git push origin "$BACKUP_BRANCH" || echo "Failed to push backup branch, continuing anyway"
             echo "Created backup branch: $BACKUP_BRANCH"
-
+            
             # Switch back to dev
             git checkout dev
           fi

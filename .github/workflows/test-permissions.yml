@@ -7,7 +7,7 @@ jobs:
   test-permissions:
     runs-on: ubuntu-latest
     name: "Test Repository Permissions"
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,22 +22,22 @@ jobs:
           echo "Testing basic git operations..."
           git status
           git log --oneline -5
-          
+
           # Test if we can create a simple file
           echo "Test file created at $(date)" > test-permissions.txt
           git add test-permissions.txt
           git commit -m "Test permissions - $(date)"
-          
+
           # Try to push
           echo "Attempting to push..."
           git push origin dev
-          
+
           echo "✅ Permissions test successful!"
 
       - name: Cleanup test file
         if: always()
         run: |
-          git rm test-permissions.txt
+          git rm -f test-permissions.txt
           git commit -m "Cleanup test file"
           git push origin dev
           echo "✅ Cleanup completed"
