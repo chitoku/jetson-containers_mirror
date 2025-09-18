@@ -1,0 +1,180 @@
+name: Test Upstream PR Sync
+
+on:
+  repository_dispatch:
+    types: [test-upstream-pr-opened, test-upstream-pr-synchronize, test-upstream-pr-reopened]
+  workflow_dispatch:
+    inputs:
+      upstream_pr_number:
+        description: 'Upstream PR number to sync'
+        required: true
+        type: string
+      upstream_repo:
+        description: 'Upstream repository (default: dusty-nv/jetson-containers)'
+        required: false
+        type: string
+        default: 'dusty-nv/jetson-containers'
+      test_repo:
+        description: 'Test repository (e.g., chitoku/jetson-containers_mirror)'
+        required: false
+        type: string
+        default: 'chitoku/jetson-containers_mirror'
+
+jobs:
+  sync-upstream-pr:
+    runs-on: ubuntu-latest
+    name: "Test Sync Upstream PR"
+
+    steps:
+      - name: Checkout test repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          repository: ${{ inputs.test_repo || 'chitoku/jetson-containers_mirror' }}
+          ref: dev
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "chitoku-test-bot"
+          git config --global user.email "chitoku-test-bot@users.noreply.github.com"
+
+      - name: Get upstream PR info
+        id: pr-info
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUMBER="${{ inputs.upstream_pr_number }}"
+            UPSTREAM_REPO="${{ inputs.upstream_repo }}"
+          else
+            PR_NUMBER="${{ github.event.client_payload.pr_number }}"
+            UPSTREAM_REPO="${{ github.event.client_payload.upstream_repo }}"
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "upstream_repo=$UPSTREAM_REPO" >> $GITHUB_OUTPUT
+
+          # Get PR details from upstream
+          PR_DATA=$(gh pr view $PR_NUMBER --repo $UPSTREAM_REPO --json title,headRefName,headRepositoryOwner,headRepositoryName,headRefOid,body,author)
+          echo "pr_data<<EOF" >> $GITHUB_OUTPUT
+          echo "$PR_DATA" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Ensure dev is synced with upstream
+        run: |
+          # Add upstream remote if not exists
+          if ! git remote get-url upstream >/dev/null 2>&1; then
+            git remote add upstream https://github.com/dusty-nv/jetson-containers.git
+          fi
+
+          # Fetch latest upstream changes
+          git fetch upstream
+
+          # Check if dev is behind upstream
+          UPSTREAM_COMMIT=$(git rev-parse upstream/dev)
+          LOCAL_COMMIT=$(git rev-parse dev)
+
+          if [ "$UPSTREAM_COMMIT" != "$LOCAL_COMMIT" ]; then
+            echo "Warning: Local dev branch is not in sync with upstream dev"
+            echo "Upstream: $UPSTREAM_COMMIT"
+            echo "Local: $LOCAL_COMMIT"
+            echo "This might cause issues with PR syncing"
+            echo "Consider running the 'Test Sync Upstream Dev Branch' workflow first"
+          else
+            echo "Dev branch is in sync with upstream"
+          fi
+
+      - name: Create or update branch
+        run: |
+          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
+          UPSTREAM_REPO="${{ steps.pr-info.outputs.upstream_repo }}"
+          BRANCH_NAME="test-upstream-pr-$PR_NUMBER"
+
+          # Check if branch already exists
+          if git show-ref --verify --quiet refs/heads/$BRANCH_NAME; then
+            echo "Branch $BRANCH_NAME already exists, updating..."
+            git checkout $BRANCH_NAME
+            git reset --hard dev
+          else
+            echo "Creating new branch $BRANCH_NAME"
+            git checkout -b $BRANCH_NAME
+          fi
+
+          # Fetch upstream changes
+          git fetch upstream
+
+          # Get the specific commit from upstream PR
+          UPSTREAM_COMMIT=$(gh pr view $PR_NUMBER --repo $UPSTREAM_REPO --json headRefOid --jq '.headRefOid')
+          echo "Upstream commit: $UPSTREAM_COMMIT"
+
+          # Cherry-pick or merge the upstream changes
+          git fetch upstream $UPSTREAM_COMMIT
+          git cherry-pick $UPSTREAM_COMMIT || {
+            echo "Cherry-pick failed, trying merge strategy..."
+            git merge $UPSTREAM_COMMIT --no-commit || true
+            git add .
+            git commit -m "Merge upstream PR #$PR_NUMBER" || true
+          }
+
+          # Push the branch
+          git push origin $BRANCH_NAME --force
+
+      - name: Create or update PR
+        run: |
+          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
+          UPSTREAM_REPO="${{ steps.pr-info.outputs.upstream_repo }}"
+          BRANCH_NAME="test-upstream-pr-$PR_NUMBER"
+
+          # Parse PR data
+          TITLE=$(echo '${{ steps.pr-info.outputs.pr_data }}' | jq -r '.title')
+          AUTHOR=$(echo '${{ steps.pr-info.outputs.pr_data }}' | jq -r '.author.login')
+          BODY=$(echo '${{ steps.pr-info.outputs.pr_data }}' | jq -r '.body // ""')
+
+          # Create PR title and body
+          PR_TITLE="[TEST] [Upstream] $TITLE"
+          PR_BODY="This is a **TEST** PR that mirrors upstream PR #$PR_NUMBER from $UPSTREAM_REPO
+
+**Original PR:** https://github.com/$UPSTREAM_REPO/pull/$PR_NUMBER
+**Original Author:** @$AUTHOR
+
+---
+
+$BODY
+
+---
+
+*This PR was automatically created by the **TEST** upstream sync workflow.*"
+
+          # Check if PR already exists
+          EXISTING_PR=$(gh pr list --head $BRANCH_NAME --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Updating existing PR #$EXISTING_PR"
+            gh pr edit $EXISTING_PR --title "$PR_TITLE" --body "$PR_BODY"
+            echo "pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
+          else
+            echo "Creating new PR"
+            NEW_PR=$(gh pr create --title "$PR_TITLE" --body "$PR_BODY" --head $BRANCH_NAME --base dev)
+            echo "Created PR: $NEW_PR"
+            # Extract PR number from URL
+            PR_NUM=$(echo $NEW_PR | grep -o '[0-9]\+$')
+            echo "pr_number=$PR_NUM" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Add labels
+        run: |
+          PR_NUMBER="${{ steps.pr-info.outputs.pr_number }}"
+          gh pr edit $PR_NUMBER --add-label "test-upstream-sync" "automated" "testing"
+
+      - name: Create test summary
+        if: always()
+        run: |
+          echo "## Test Upstream PR Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Test Repository:** ${{ inputs.test_repo || 'chitoku/jetson-containers_mirror' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Upstream PR:** #${{ steps.pr-info.outputs.pr_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Upstream Repo:** ${{ steps.pr-info.outputs.upstream_repo }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Test PR Created:** ${{ steps.create-pr.outputs.pr_number || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** test-upstream-pr-${{ steps.pr-info.outputs.pr_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
